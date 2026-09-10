@@ -1,6 +1,9 @@
 import os
 import html
 import re
+import time
+import random
+import string
 import asyncio
 import httpx
 from urllib.parse import urljoin
@@ -69,7 +72,7 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     except: return site["name"], []
 
 # =====================================================================
-# استخراج‌گر کاملاً دقیق (Strict Video Link Extractor)
+# استخراج‌گر مجهز به تکنیک بای‌پس (Bypass API)
 # =====================================================================
 async def handle_extract(request):
     url = request.query.get("url", "").strip()
@@ -79,15 +82,45 @@ async def handle_extract(request):
     
     try:
         async with httpx.AsyncClient(verify=False) as client:
-            res = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=15.0, follow_redirects=True)
+            # استفاده از آی‌پی ایران (شاتل/ایرانسل) برای گول زدن فایروال هکس‌دانلود
+            req_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "X-Forwarded-For": "5.200.14.15", 
+                "X-Real-IP": "5.200.14.15",
+                "Client-IP": "5.200.14.15"
+            }
+            res = await client.get(url, headers=req_headers, timeout=15.0, follow_redirects=True)
             content = res.text
             
+            # --- هک اختصاصی برای هکس‌دانلود ---
+            if 'hex' in url.lower() or 'hexdl' in url.lower():
+                post_id_match = re.search(r'postid-(\d+)', content) or re.search(r'\?p=(\d+)', content) or re.search(r'"post_id"\s*:\s*"?(\d+)"?', content)
+                if post_id_match:
+                    post_id = post_id_match.group(1)
+                    domain = url.split('/')[2]
+                    
+                    # تولید دقیق همون پارامترهایی که تو تب Network پیدا کردی
+                    ts = int(time.time() * 1000)
+                    rnd_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=11))
+                    api_url = f"https://{domain}/wp-json/hexpro/v1/cinema-access/v2/{post_id}?hex_access_request={ts}-{rnd_str}"
+                    
+                    payload = {"check_id": 1, "checked_at": ts}
+                    try:
+                        res_api = await client.post(api_url, json=payload, headers=req_headers, timeout=10.0)
+                        if res_api.status_code == 200:
+                            api_data = res_api.json()
+                            if "download_html" in api_data:
+                                # اضافه کردن لینک‌های مخفی به محتوای اصلی تا رگکس پایین پیداشون کنه
+                                content += " " + str(api_data["download_html"])
+                    except Exception as e:
+                        pass
+            # ------------------------------------
+
+            # استخراج تمام لینک‌ها با دقت بالا
             a_tags = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', content, re.IGNORECASE | re.DOTALL)
             
             links = []
             seen = set()
-            
-            # فقط و فقط این پسوندها به عنوان لینک فیلم شناخته میشن
             video_exts = ['.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m3u8']
             
             for href, text_html in a_tags:
@@ -97,18 +130,13 @@ async def handle_extract(request):
                 href_lower = href.lower()
                 clean_text = clean_html_text(text_html)
                 
-                # قانون سخت‌گیرانه: حتماً باید فایل ویدیویی باشه
                 has_video_ext = any(ext in href_lower for ext in video_exts)
-                
-                # حذف شبکه‌های اجتماعی، تگ‌ها و لینک‌های متفرقه
                 is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', 'rubika', 'eitaa', '/tag/', '/category/', '/author/', '/page/', '?p='])
                 is_self_link = url.strip('/') == href.strip('/')
                 
                 if has_video_ext and not is_junk and not is_self_link and href not in seen:
-                    # تبدیل http به https برای رفع خطای Mixed Content پلیر
                     href = href.replace('http://', 'https://')
                     
-                    # اگر سایت اسم لینک رو بد نوشته بود یا فقط نوشته بود "دانلود"، ما از خود لینک مشخصات رو می‌کشیم بیرون
                     if len(clean_text) < 4 or clean_text.strip() == "دانلود":
                         qualities = []
                         if '1080' in href_lower: qualities.append('1080p')
@@ -124,12 +152,10 @@ async def handle_extract(request):
                         if qualities:
                             clean_text = " - ".join(qualities)
                         else:
-                            # اگه کیفیت تو لینک نبود، اسم خود فایل رو نشون بده
                             clean_text = href.split('/')[-1][:40] 
 
-                    # تمیزکاری نهایی اسم لینک
                     clean_text = clean_text.replace("دانلود", "").replace("لینک مستقیم", "").strip()
-                    if not clean_text: clean_text = "لینک دانلود فیلم"
+                    if not clean_text: clean_text = "لینک دانلود"
                     
                     links.append({"title": clean_text[:80], "url": href})
                     seen.add(href)
