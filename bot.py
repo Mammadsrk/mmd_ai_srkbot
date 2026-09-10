@@ -22,9 +22,24 @@ SITES = [
         "type": "wp"
     },
     {
-        "name": "نکست‌مووی",
-        "api": "https://w.mihan-cdn.com/api/v3/search",
-        "type": "nxm"
+        "name": "هکس‌دانلود",
+        "api": "https://hexdownload.co/wp-json/wp/v2/posts?search=",
+        "type": "wp"
+    },
+    {
+        "name": "فیلم‌تو‌مووی",
+        "api": "https://www.myf2m.net/wp-json/wp/v2/posts?search=",
+        "type": "wp"
+    },
+    {
+        "name": "زرین‌پخش",
+        "api": "https://zarinpakhsh.ir/wp-json/wp/v2/posts?search=",
+        "type": "wp"
+    },
+    {
+        "name": "فیلمچی",
+        "api": "https://filmchi.net/wp-json/wp/v2/posts?search=",
+        "type": "wp"
     }
 ]
 
@@ -38,32 +53,12 @@ def clean_title(text: str) -> str:
 async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": "https://nxmweb.com/",
-        "Origin": "https://nxmweb.com",
         "Accept": "application/json, text/plain, */*"
     }
     try:
-        if site["type"] == "nxm":
-            res = await client.post(
-                site["api"],
-                data={"q": query, "page": "1"},
-                params={"q": query, "page": 1},
-                headers=headers,
-                timeout=8.0
-            )
-            if res.status_code != 200:
-                res = await client.get(
-                    f"{site['api']}?q={query}&page=1",
-                    headers=headers,
-                    timeout=8.0
-                )
-        else:
-            res = await client.get(
-                f"{site['api']}{query}",
-                headers=headers,
-                timeout=8.0,
-                follow_redirects=True
-            )
+        url = f"{site['api']}{query}"
+        # پارامتر follow_redirects باعث می‌شود تغییرات دامنه فیلم‌تومووی اتوماتیک ردگیری شوند
+        res = await client.get(url, headers=headers, timeout=8.0, follow_redirects=True)
 
         if res.status_code != 200:
             return site["name"], []
@@ -71,17 +66,8 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         data = res.json()
         items = []
 
-        if site["type"] == "nxm":
-            results = data if isinstance(data, list) else data.get("data", [])
-            for item in results[:5]:
-                title = clean_title(item.get("title_fa") or item.get("title_en") or item.get("title") or "")
-                movie_id = item.get("id") or item.get("movie_id")
-                if movie_id:
-                    items.append((title, f"https://nxmweb.com/details/{movie_id}"))
-
-        elif site["type"] == "wp":
-            results = data if isinstance(data, list) else []
-            for item in results[:5]:
+        if isinstance(data, list):
+            for item in data[:4]:
                 raw_title = item.get("title", {}).get("rendered", "")
                 link = item.get("link", "")
                 if raw_title and link:
@@ -92,11 +78,11 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         return site["name"], []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! نام اثر مورد نظرت رو بفرست تا در سایت‌ها برات جستجو کنم.")
+    await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست تا بین ۶ سایت معتبر و رایگان جستجو کنم.")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
-    wait_msg = await update.message.reply_text("در حال جستجو...")
+    wait_msg = await update.message.reply_text("در حال جستجو در سایت‌ها...")
 
     async with httpx.AsyncClient() as client:
         tasks = [fetch_site(client, site, query) for site in SITES]
