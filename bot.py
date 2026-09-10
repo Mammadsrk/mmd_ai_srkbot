@@ -50,21 +50,24 @@ def clean_title(text: str) -> str:
     text = re.sub(r"\s+(با\s+دوبله\s+فارسی|زیرنویس\s+چسبیده|دوبله\s+فارسی|فارسی).*$", "", text, flags=re.IGNORECASE)
     return text.strip() or "مشاهده لینک"
 
-# تابع جدید برای استخراج پوستر
 def extract_image(item, site_type):
     if site_type == "nxm":
         return item.get("thumb") or item.get("poster") or item.get("pic") or ""
     elif site_type == "wp":
+        # بررسی فیلدهای اختصاصی عکس
+        if item.get("jetpack_featured_media_url"):
+            return item.get("jetpack_featured_media_url")
+            
         yoast = item.get("yoast_head_json", {})
         if isinstance(yoast, dict):
             og_images = yoast.get("og_image", [])
             if isinstance(og_images, list) and len(og_images) > 0:
                 return og_images[0].get("url", "")
         
-        # در صورت نبود افزونه سئو، جستجو در محتوا
+        # رگکس قدرتمندتر برای پیدا کردن عکس حتی از Lazy Load ها (رفع مشکل فیلم‌تومووی)
         content = item.get("content", {}).get("rendered", "")
         if content:
-            match = re.search(r'<img[^>]+src="([^"]+)"', content)
+            match = re.search(r'<img[^>]+(?:src|data-src|data-lazy-src)=["\']([^"\']+)["\']', content, re.IGNORECASE)
             if match:
                 return match.group(1)
     return ""
@@ -84,7 +87,7 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         items = []
 
         if isinstance(data, list):
-            for item in data[:6]: # گرفتن 6 نتیجه برای زیباتر شدن گرید
+            for item in data[:8]: # افزایش ظرفیت به 8 آیتم برای اسکرول زیباتر
                 raw_title = item.get("title", {}).get("rendered", "")
                 link = item.get("link", "")
                 image = extract_image(item, site["type"])
@@ -95,7 +98,6 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     except Exception:
         return site["name"], []
 
-# هندلر تلگرام
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست.")
 
@@ -110,7 +112,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for name, items in responses:
         if items:
             output.append(f"▫️ <b>{name}</b>:")
-            # در تلگرام عکس نمی‌فرستیم، فقط اسم و لینک
             for title, link, _ in items: 
                 output.append(f"  • <a href=\"{link}\">{html.escape(title)}</a>")
         else:
@@ -119,7 +120,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(output)
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-# وب‌سرور برای سایت
 async def handle_ping(request):
     return web.Response(text="Bot is active!")
 
@@ -139,7 +139,6 @@ async def handle_web_search(request):
 
     results = []
     for name, items in responses:
-        # ارسال عکس به همراه عنوان و لینک به کلادفلر
         for title, link, image in items:
             results.append({
                 "site": name,
