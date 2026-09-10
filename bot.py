@@ -48,7 +48,7 @@ def extract_image(item, site_type):
         if content:
             match = re.search(r'(?:src|data-src|data-lazy-src)\s*=\s*["\']([^"\']+)["\']', content, re.IGNORECASE)
             if match: return match.group(1)
-            match = re.search(r'https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)', content, re.IGNORECDATA)
+            match = re.search(r'https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)', content, re.IGNORECASE)
             if match: return match.group(0)
     return ""
 
@@ -62,107 +62,97 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         data = res.json()
         items = []
         if isinstance(data, list):
-            for item in data[:8]:
+            for item in data[:6]:
                 raw_title = item.get("title", {}).get("rendered", "")
                 link = item.get("link", "")
                 image = extract_image(item, site["type"])
-                post_id = item.get("id", "") # ذخیره مستقیم آیدی وردپرس
+                post_id = item.get("id", "")
                 if raw_title and link:
                     items.append((clean_title(raw_title), link, image, post_id))
         return site["name"], items
-    except: return site["name"], []
+    except Exception:
+        return site["name"], []
 
-# =====================================================================
-# استخراج‌گر نهایی مجهز به بای‌پس مستقیم آیدی هکس‌دانلود
-# =====================================================================
-async def handle_extract(request):
-    url = request.query.get("url", "").strip()
-    cors_headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET"}
-    
-    if not url: return web.json_response({"error": "URL missing"}, status=400, headers=cors_headers)
-    
+# موتور استخراج لینک‌های دانلود فایل
+async def extract_download_links(url: str) -> list:
     try:
         async with httpx.AsyncClient(verify=False) as client:
             req_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "X-Forwarded-For": "5.200.14.15", 
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "X-Forwarded-For": "5.200.14.15",
                 "X-Real-IP": "5.200.14.15"
             }
+            res = await client.get(url, headers=req_headers, timeout=12.0, follow_redirects=True)
+            content = res.text
             
-            content = ""
-            
-            # 1. اگر لینک مربوط به هکس‌دانلود است، مستقیم از API داخلی‌اش لینک‌ها را می‌دزیدیم
-            if 'hex' in url.lower() or 'hexdl' in url.lower():
-                try:
-                    domain = url.split('/')[2]
-                    # استخراج آیدی از طریق حدس زدن یا درخواست به صفحه برای پیدا کردن postid
-                    res_page = await client.get(url, headers=req_headers, timeout=10.0, follow_redirects=True)
-                    post_id_match = re.search(r'postid-(\d+)', res_page.text) or re.search(r'/p/(\d+)', res_page.text)
-                    
-                    if post_id_match:
-                        post_id = post_id_match.group(1)
-                        ts = int(time.time() * 1000)
-                        rnd_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=11))
-                        api_url = f"https://{domain}/wp-json/hexpro/v1/cinema-access/v2/{post_id}?hex_access_request={ts}-{rnd_str}"
-                        
-                        payload = {"check_id": 1, "checked_at": ts}
-                        res_api = await client.post(api_url, json=payload, headers=req_headers, timeout=10.0)
-                        if res_api.status_code == 200:
-                            api_data = res_api.json()
-                            if isinstance(api_data, dict):
-                                for key in ["download_html", "hero_html", "content"]:
-                                    if key in api_data and api_data[key]:
-                                        content += " " + str(api_data[key])
-                except Exception:
-                    pass
-
-            # اگر روش بالا به هر دلیلی جواب نداد، صفحه عادی را می‌خوانیم
-            if not content:
-                res = await client.get(url, headers=req_headers, timeout=15.0, follow_redirects=True)
-                content = res.text
-
-            # استخراج تمام تگ‌های <a> 
             a_tags = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', content, re.IGNORECASE | re.DOTALL)
-            
             links = []
             seen = set()
-            video_exts = ['.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m3u8']
+            video_exts = ['.mkv', '.mp4', '.avi', '.m4v', '.mov', '.ts', '.m3u8']
             
             for href, text_html in a_tags:
-                href = urljoin(url, href) 
+                href = urljoin(url, href)
                 if not href.startswith('http'): continue
-                
                 href_lower = href.lower()
                 clean_text = clean_html_text(text_html)
                 
                 has_video_ext = any(ext in href_lower for ext in video_exts) or 'upera.tv' in href_lower or 'hub.hxdl.ir' in href_lower
-                is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', 'rubika', 'eitaa', '/tag/', '/category/', '/author/', '/page/', '?p='])
-                is_self_link = url.strip('/') == href.strip('/')
+                is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', '/tag/', '/category/'])
                 
-                if has_video_ext and not is_junk and not is_self_link and href not in seen:
+                if has_video_ext and not is_junk and href not in seen:
                     href = href.replace('http://', 'https://')
-                    
-                    if len(clean_text) < 3 or clean_text.strip() in ["دانلود", "تماشا", "لینک مستقیم"]:
-                        qualities = []
-                        if '1080' in href_lower or 'hq_1080' in href_lower: qualities.append('1080p')
-                        elif '720' in href_lower: qualities.append('720p')
-                        elif '480' in href_lower: qualities.append('480p')
-                        elif 'fhd' in href_lower: qualities.append('FHD')
-                        
-                        if 'x265' in href_lower: qualities.append('x265')
-                        if 'dubbed' in href_lower or '-0-' in href_lower or 'دوبله' in href_lower: qualities.append('دوبله فارسی')
-                        else: qualities.append('زیرنویس')
-                        
-                        clean_text = " - ".join(qualities)
-                    
-                    if not clean_text: clean_text = "لینک دانلود"
-                    
-                    links.append({"title": clean_text[:80], "url": href})
+                    if len(clean_text) < 3:
+                        clean_text = "لینک دانلود"
+                    links.append({"title": clean_text[:40], "url": href})
                     seen.add(href)
-            
-            return web.json_response({"links": links}, headers=cors_headers)
-    except Exception as e:
-        return web.json_response({"error": str(e), "links": []}, headers=cors_headers)
+            return links
+    except Exception:
+        return []
+
+# =====================================================================
+# هندلرهای تلگرام (کامل و اصلاح شده)
+# =====================================================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🎬 سلام! نام فیلم یا سریال مورد نظرت رو برام بفرست تا بگردم.")
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+    if not query:
+        return
+
+    wait_msg = await update.message.reply_text("🔍 در حال جستجو در تمامی سایت‌ها...")
+    
+    async with httpx.AsyncClient() as client:
+        tasks = [fetch_site(client, site, query) for site in SITES]
+        responses = await asyncio.gather(*tasks)
+
+    output = []
+    found_any = False
+
+    for name, items in responses:
+        if items:
+            found_any = True
+            output.append(f"<b>🌐 {name}:</b>")
+            # رفع باگ Unpack با استفاده از 4 متغیر:
+            for title, link, _, _ in items:
+                output.append(f"  ▫️ <a href=\"{link}\">{html.escape(title)}</a>")
+            output.append("")
+
+    if not found_any:
+        await wait_msg.edit_text("❌ متأسفانه فیلم یا سریالی با این عنوان یافت نشد.")
+        return
+
+    text = "\n".join(output)
+    if len(text) > 4000:
+        text = text[:4000] + "..."
+
+    await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+# =====================================================================
+# وب سرور و APIها
+# =====================================================================
+async def handle_ping(request): 
+    return web.Response(text="Bot is active!")
 
 async def handle_web_search(request):
     query = request.query.get("q", "").strip()
@@ -175,13 +165,20 @@ async def handle_web_search(request):
 
     results = []
     for name, items in responses:
-        for title, link, image, _ in items: # اصلاح دریافت آیتم‌ها
+        for title, link, image, _ in items:
             results.append({"site": name, "title": title, "link": link, "image": image})
     return web.json_response({"results": results}, headers=cors_headers)
 
+async def handle_extract(request):
+    url = request.query.get("url", "").strip()
+    cors_headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET"}
+    if not url: return web.json_response({"error": "URL missing"}, status=400, headers=cors_headers)
+    
+    links = await extract_download_links(url)
+    return web.json_response({"links": links}, headers=cors_headers)
+
 async def handle_options(request):
     return web.Response(status=204, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type"})
-async def handle_ping(request): return web.Response(text="Bot is active!")
 
 async def run_web_server():
     server = web.Application()
@@ -195,18 +192,18 @@ async def run_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-async def start(update, context): await update.message.reply_text("سلام! نام فیلم رو بفرست.")
-async def search(update, context): ... 
-
 async def main():
-    if not TOKEN: raise ValueError("BOT_TOKEN is missing!")
+    if not TOKEN: 
+        raise ValueError("BOT_TOKEN is missing!")
     await run_web_server()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
     async with app:
         await app.start()
         await app.updater.start_polling()
-        while True: await asyncio.sleep(3600)
+        while True: 
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())
