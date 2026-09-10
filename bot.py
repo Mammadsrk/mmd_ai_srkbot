@@ -3,6 +3,7 @@ import html
 import re
 import asyncio
 import httpx
+from urllib.parse import urljoin
 from aiohttp import web
 from telegram import Update
 from telegram.constants import ParseMode
@@ -67,7 +68,7 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         return site["name"], items
     except: return site["name"], []
 
-# --- API جدید استخراج لینک دانلود ---
+# --- آپدیت: استخراج‌گر فوق‌هوشمند با پشتیبانی از هکس‌دانلود و پلیر امن ---
 async def handle_extract(request):
     url = request.query.get("url", "").strip()
     cors_headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET"}
@@ -76,30 +77,38 @@ async def handle_extract(request):
     
     try:
         async with httpx.AsyncClient(verify=False) as client:
-            res = await client.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12.0, follow_redirects=True)
+            res = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=15.0, follow_redirects=True)
             content = res.text
             
-            # جستجو برای تگ‌های a که لینک فایل ویدیویی دارند
             a_tags = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', content, re.IGNORECASE | re.DOTALL)
             
             links = []
             seen = set()
             for href, text_html in a_tags:
+                href = urljoin(url, href) # تبدیل لینک‌های نسبی به کامل
+                if not href.startswith('http'): continue
+                
+                # رفع مشکل پلیر: تبدیل تمام لینک‌های دانلود به https
+                href = href.replace('http://', 'https://')
                 href_lower = href.lower()
-                if ('.mkv' in href_lower or '.mp4' in href_lower) and href not in seen:
-                    clean_text = clean_html_text(text_html)
-                    # اگر متنی پیدا نشد، از روی آدرس کیفیت را حدس می‌زنیم
+                clean_text = clean_html_text(text_html)
+                
+                # شرط جدید برای پیدا کردن لینک‌های مخفی مثل هکس‌دانلود
+                has_video_ext = any(x in href_lower for x in ['.mkv', '.mp4', '.avi', '.m4v'])
+                has_dl_keyword = any(x in clean_text for x in ['دانلود', 'کیفیت', 'قسمت', 'فصل', 'پارت', 'لینک مستقیم'])
+                is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', '/tag/', '/category/'])
+                
+                if (has_video_ext or has_dl_keyword) and not is_junk and href not in seen:
                     if not clean_text or len(clean_text) < 3:
                         if '1080' in href: clean_text = "کیفیت 1080p"
                         elif '720' in href: clean_text = "کیفیت 720p"
                         elif '480' in href: clean_text = "کیفیت 480p"
-                        else: clean_text = "لینک دانلود مستقیم"
+                        else: clean_text = "لینک دانلود"
                     
-                    # تمیزکاری بیشتر متن‌ها
                     clean_text = clean_text.replace("دانلود", "").strip()
-                    
-                    links.append({"title": clean_text[:60], "url": href})
-                    seen.add(href)
+                    if len(clean_text) > 2:
+                        links.append({"title": clean_text[:70], "url": href})
+                        seen.add(href)
             
             return web.json_response({"links": links}, headers=cors_headers)
     except Exception as e:
@@ -128,7 +137,7 @@ async def run_web_server():
     server = web.Application()
     server.router.add_get("/", handle_ping)
     server.router.add_get("/api/search", handle_web_search)
-    server.router.add_get("/api/extract", handle_extract) # روت جدید ثبت شد
+    server.router.add_get("/api/extract", handle_extract)
     server.router.add_route("OPTIONS", "/api/search", handle_options)
     runner = web.AppRunner(server)
     await runner.setup()
@@ -138,7 +147,7 @@ async def run_web_server():
 
 # هندلرهای تلگرام
 async def start(update, context): await update.message.reply_text("سلام! نام فیلم رو بفرست.")
-async def search(update, context): ... # (خلاصه شده برای جلوگیری از شلوغی، تو فایل اصلی خودت هست)
+async def search(update, context): ... # هندلر سرچ تلگرام
 
 async def main():
     if not TOKEN: raise ValueError("BOT_TOKEN is missing!")
