@@ -57,7 +57,6 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     }
     try:
         url = f"{site['api']}{query}"
-        # پارامتر follow_redirects باعث می‌شود تغییرات دامنه فیلم‌تومووی اتوماتیک ردگیری شوند
         res = await client.get(url, headers=headers, timeout=8.0, follow_redirects=True)
 
         if res.status_code != 200:
@@ -77,6 +76,7 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     except Exception:
         return site["name"], []
 
+# هندلرهای تلگرام
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست تا بین ۶ سایت معتبر و رایگان جستجو کنم.")
 
@@ -100,12 +100,49 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(output)
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
+# هندلرهای وب‌سرور برای سایت و آپتایم‌ربات
 async def handle_ping(request):
-    return web.Response(text="Bot is active and running!")
+    return web.Response(text="Backend is active and running!")
+
+async def handle_web_search(request):
+    query = request.query.get("q", "").strip()
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+    }
+
+    if not query:
+        return web.json_response({"results": []}, headers=cors_headers)
+
+    async with httpx.AsyncClient() as client:
+        tasks = [fetch_site(client, site, query) for site in SITES]
+        responses = await asyncio.gather(*tasks)
+
+    results = []
+    for name, items in responses:
+        for title, link in items:
+            results.append({
+                "site": name,
+                "title": title,
+                "link": link
+            })
+
+    return web.json_response({"results": results}, headers=cors_headers)
+
+async def handle_options(request):
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+    }
+    return web.Response(status=204, headers=cors_headers)
 
 async def run_web_server():
     server = web.Application()
     server.router.add_get("/", handle_ping)
+    server.router.add_get("/api/search", handle_web_search)
+    server.router.add_route("OPTIONS", "/api/search", handle_options)
     runner = web.AppRunner(server)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
