@@ -1,3 +1,4 @@
+import os
 import html
 import re
 import httpx
@@ -5,7 +6,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-TOKEN = "8935433677:AAESHAB14g_2CBhJl71UTZxhLvcpK5Sv_NM"
+TOKEN = os.environ.get("BOT_TOKEN")
 
 SITES = [
     {
@@ -89,6 +90,8 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 if __name__ == "__main__":
+    if not TOKEN:
+        raise ValueError("BOT_TOKEN is not set in environment variables!")
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
