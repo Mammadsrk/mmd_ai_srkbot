@@ -54,7 +54,6 @@ def extract_image(item, site_type):
     if site_type == "nxm":
         return item.get("thumb") or item.get("poster") or item.get("pic") or ""
     elif site_type == "wp":
-        # بررسی فیلدهای اختصاصی عکس
         if item.get("jetpack_featured_media_url"):
             return item.get("jetpack_featured_media_url")
             
@@ -64,12 +63,17 @@ def extract_image(item, site_type):
             if isinstance(og_images, list) and len(og_images) > 0:
                 return og_images[0].get("url", "")
         
-        # رگکس قدرتمندتر برای پیدا کردن عکس حتی از Lazy Load ها (رفع مشکل فیلم‌تومووی)
+        # شکارچی هوشمند تصاویر برای فیلم‌تو‌مووی
         content = item.get("content", {}).get("rendered", "")
         if content:
-            match = re.search(r'<img[^>]+(?:src|data-src|data-lazy-src)=["\']([^"\']+)["\']', content, re.IGNORECASE)
+            # 1. تلاش برای پیدا کردن ویژگی‌های سورس عکس
+            match = re.search(r'(?:src|data-src|data-lazy-src)\s*=\s*["\']([^"\']+)["\']', content, re.IGNORECASE)
             if match:
                 return match.group(1)
+            # 2. تلاش بی‌رحمانه: پیدا کردن اولین لینک اینترنتی که به عکس ختم می‌شود
+            match = re.search(r'https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)', content, re.IGNORECASE)
+            if match:
+                return match.group(0)
     return ""
 
 async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
@@ -87,7 +91,7 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         items = []
 
         if isinstance(data, list):
-            for item in data[:8]: # افزایش ظرفیت به 8 آیتم برای اسکرول زیباتر
+            for item in data[:8]:
                 raw_title = item.get("title", {}).get("rendered", "")
                 link = item.get("link", "")
                 image = extract_image(item, site["type"])
