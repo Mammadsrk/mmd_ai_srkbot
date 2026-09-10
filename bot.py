@@ -72,7 +72,7 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     except: return site["name"], []
 
 # =====================================================================
-# استخراج‌گر مجهز به تکنیک بای‌پس (Bypass API)
+# استخراج‌گر فوق‌پیشرفته و سازگار با ساختار جدید هکس‌دانلود
 # =====================================================================
 async def handle_extract(request):
     url = request.query.get("url", "").strip()
@@ -82,24 +82,21 @@ async def handle_extract(request):
     
     try:
         async with httpx.AsyncClient(verify=False) as client:
-            # استفاده از آی‌پی ایران (شاتل/ایرانسل) برای گول زدن فایروال هکس‌دانلود
             req_headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "X-Forwarded-For": "5.200.14.15", 
-                "X-Real-IP": "5.200.14.15",
-                "Client-IP": "5.200.14.15"
+                "X-Real-IP": "5.200.14.15"
             }
             res = await client.get(url, headers=req_headers, timeout=15.0, follow_redirects=True)
             content = res.text
             
-            # --- هک اختصاصی برای هکس‌دانلود ---
+            # بای‌پس اختصاصی هکس‌دانلود و تزریق HTML مستقیم به محتوا
             if 'hex' in url.lower() or 'hexdl' in url.lower():
                 post_id_match = re.search(r'postid-(\d+)', content) or re.search(r'\?p=(\d+)', content) or re.search(r'"post_id"\s*:\s*"?(\d+)"?', content)
                 if post_id_match:
                     post_id = post_id_match.group(1)
                     domain = url.split('/')[2]
                     
-                    # تولید دقیق همون پارامترهایی که تو تب Network پیدا کردی
                     ts = int(time.time() * 1000)
                     rnd_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=11))
                     api_url = f"https://{domain}/wp-json/hexpro/v1/cinema-access/v2/{post_id}?hex_access_request={ts}-{rnd_str}"
@@ -109,14 +106,15 @@ async def handle_extract(request):
                         res_api = await client.post(api_url, json=payload, headers=req_headers, timeout=10.0)
                         if res_api.status_code == 200:
                             api_data = res_api.json()
-                            if "download_html" in api_data:
-                                # اضافه کردن لینک‌های مخفی به محتوای اصلی تا رگکس پایین پیداشون کنه
-                                content += " " + str(api_data["download_html"])
-                    except Exception as e:
+                            # اضافه کردن کل محتوای باز شده از API به متن قابل جستجو
+                            if isinstance(api_data, dict):
+                                for key in ["download_html", "hero_html", "content"]:
+                                    if key in api_data and api_data[key]:
+                                        content += " " + str(api_data[key])
+                    except Exception:
                         pass
-            # ------------------------------------
 
-            # استخراج تمام لینک‌ها با دقت بالا
+            # استخراج تمام تگ‌های <a> با بازه گسترده‌تر
             a_tags = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', content, re.IGNORECASE | re.DOTALL)
             
             links = []
@@ -130,31 +128,27 @@ async def handle_extract(request):
                 href_lower = href.lower()
                 clean_text = clean_html_text(text_html)
                 
-                has_video_ext = any(ext in href_lower for ext in video_exts)
+                # بررسی اینکه آیا لینک مربوط به ویدیو یا دکمه دانلود است
+                has_video_ext = any(ext in href_lower for ext in video_exts) or 'upera.tv' in href_lower or 'hub.hxdl.ir' in href_lower
                 is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', 'rubika', 'eitaa', '/tag/', '/category/', '/author/', '/page/', '?p='])
                 is_self_link = url.strip('/') == href.strip('/')
                 
                 if has_video_ext and not is_junk and not is_self_link and href not in seen:
                     href = href.replace('http://', 'https://')
                     
-                    if len(clean_text) < 4 or clean_text.strip() == "دانلود":
+                    if len(clean_text) < 3 or clean_text.strip() in ["دانلود", "تماشا", "لینک مستقیم"]:
                         qualities = []
-                        if '1080' in href_lower: qualities.append('1080p')
+                        if '1080' in href_lower or 'hq_1080' in href_lower: qualities.append('1080p')
                         elif '720' in href_lower: qualities.append('720p')
                         elif '480' in href_lower: qualities.append('480p')
+                        elif 'fhd' in href_lower: qualities.append('FHD')
                         
                         if 'x265' in href_lower: qualities.append('x265')
-                        if 'bluray' in href_lower: qualities.append('BluRay')
-                        if 'web-dl' in href_lower or 'webrip' in href_lower: qualities.append('WEB-DL')
-                        if 'dubbed' in href_lower or 'farsi' in href_lower or 'دوبله' in href_lower: qualities.append('دوبله فارسی')
-                        if 'sub' in href_lower or 'زیرنویس' in href_lower: qualities.append('زیرنویس')
+                        if 'dubbed' in href_lower or '-0-' in href_lower or 'دوبله' in href_lower: qualities.append('دوبله فارسی')
+                        else: qualities.append('زیرنویس')
                         
-                        if qualities:
-                            clean_text = " - ".join(qualities)
-                        else:
-                            clean_text = href.split('/')[-1][:40] 
-
-                    clean_text = clean_text.replace("دانلود", "").replace("لینک مستقیم", "").strip()
+                        clean_text = " - ".join(qualities)
+                    
                     if not clean_text: clean_text = "لینک دانلود"
                     
                     links.append({"title": clean_text[:80], "url": href})
