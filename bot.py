@@ -12,42 +12,46 @@ TOKEN = os.environ.get("BOT_TOKEN")
 
 SITES = [
     {
+        "name": "دوستی‌ها",
+        "api": "https://www.doostihaa.com/wp-json/wp/v2/posts?search=",
+        "method": "GET",
+        "type": "wp"
+    },
+    {
         "name": "نکست‌مووی",
-        "api": "https://w.mihan-cdn.com/api/v3/search?page=1&q=",
+        "api": "https://w.mihan-cdn.com/api/v3/search",
+        "method": "POST",
         "type": "nxm"
     },
     {
         "name": "زردفیلم",
         "api": "https://zardfilm.in/wp-json/wp/v2/posts?search=",
-        "type": "wp"
-    },
-    {
-        "name": "دوستی‌ها",
-        "api": "https://www.doostihaa.com/wp-json/wp/v2/posts?search=",
-        "type": "wp"
-    },
-    {
-        "name": "مووی‌شو",
-        "api": "https://www.moviesho.com/wp-json/wp/v2/posts?search=",
+        "method": "GET",
         "type": "wp"
     }
 ]
 
 def clean_title(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"(دانلود|فیلم|سریال|انیمیشن|سینمایی|فصل\s+\d+|قسمت\s+\d+).*", "", text, flags=re.IGNORECASE)
-    return text.strip() or "عنوان نامشخص"
+    text = html.unescape(text)
+    # حذف عبارات اضافی رایج از ابتدا یا انتهای عنوان به جای پاک کردن کل متن
+    text = re.sub(r"^(دانلود|فیلم|سریال|انیمیشن|سینمایی)\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+(با\s+دوبله\s+فارسی|زیرنویس\s+چسبیده|دوبله\s+فارسی|فارسی).*$", "", text, flags=re.IGNORECASE)
+    return text.strip() or "مشاهده لینک"
 
 async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
-    url = f"{site['api']}{query}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*"
     }
     try:
-        res = await client.get(url, headers=headers, timeout=8.0, follow_redirects=True)
+        if site["method"] == "POST":
+            res = await client.post(site["api"], json={"q": query, "page": 1}, headers=headers, timeout=8.0)
+        else:
+            res = await client.get(f"{site['api']}{query}", headers=headers, timeout=8.0, follow_redirects=True)
+
         if res.status_code != 200:
-            return site["name"], [], f"Status: {res.status_code}"
+            return site["name"], []
         
         data = res.json()
         items = []
@@ -68,31 +72,29 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
                 if raw_title and link:
                     items.append((clean_title(raw_title), link))
 
-        return site["name"], items, "OK"
-    except httpx.TimeoutException:
-        return site["name"], [], "Timeout"
-    except Exception as e:
-        return site["name"], [], type(e).__name__
+        return site["name"], items
+    except Exception:
+        return site["name"], []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست تا در سایت‌ها جستجو کنم.")
+    await update.message.reply_text("سلام! نام اثر مورد نظرت رو بفرست تا جستجو کنم.")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     wait_msg = await update.message.reply_text("در حال جستجو...")
 
     async with httpx.AsyncClient() as client:
-        responses = [await fetch_site(client, site, query) for site in SITES]
+        tasks = [fetch_site(client, site, query) for site in SITES]
+        responses = await asyncio.gather(*tasks)
 
     output = []
-    for name, items, status in responses:
+    for name, items in responses:
         if items:
             output.append(f"▫️ <b>{name}</b>:")
             for title, link in items:
-                safe_title = html.escape(title)
-                output.append(f"  • <a href=\"{link}\">{safe_title}</a>")
+                output.append(f"  • <a href=\"{link}\">{html.escape(title)}</a>")
         else:
-            output.append(f"▫️ <b>{name}</b>: نتیجه‌ای یافت نشد ({status})")
+            output.append(f"▫️ <b>{name}</b>: نتیجه‌ای یافت نشد.")
 
     text = "\n".join(output)
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
