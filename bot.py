@@ -48,7 +48,7 @@ def extract_image(item, site_type):
         if content:
             match = re.search(r'(?:src|data-src|data-lazy-src)\s*=\s*["\']([^"\']+)["\']', content, re.IGNORECASE)
             if match: return match.group(1)
-            match = re.search(r'https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)', content, re.IGNORECASE)
+            match = re.search(r'https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)', content, re.IGNORECDATA)
             if match: return match.group(0)
     return ""
 
@@ -66,13 +66,14 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
                 raw_title = item.get("title", {}).get("rendered", "")
                 link = item.get("link", "")
                 image = extract_image(item, site["type"])
+                post_id = item.get("id", "") # ذخیره مستقیم آیدی وردپرس
                 if raw_title and link:
-                    items.append((clean_title(raw_title), link, image))
+                    items.append((clean_title(raw_title), link, image, post_id))
         return site["name"], items
     except: return site["name"], []
 
 # =====================================================================
-# استخراج‌گر فوق‌پیشرفته و سازگار با ساختار جدید هکس‌دانلود
+# استخراج‌گر نهایی مجهز به بای‌پس مستقیم آیدی هکس‌دانلود
 # =====================================================================
 async def handle_extract(request):
     url = request.query.get("url", "").strip()
@@ -87,34 +88,40 @@ async def handle_extract(request):
                 "X-Forwarded-For": "5.200.14.15", 
                 "X-Real-IP": "5.200.14.15"
             }
-            res = await client.get(url, headers=req_headers, timeout=15.0, follow_redirects=True)
-            content = res.text
             
-            # بای‌پس اختصاصی هکس‌دانلود و تزریق HTML مستقیم به محتوا
+            content = ""
+            
+            # 1. اگر لینک مربوط به هکس‌دانلود است، مستقیم از API داخلی‌اش لینک‌ها را می‌دزیدیم
             if 'hex' in url.lower() or 'hexdl' in url.lower():
-                post_id_match = re.search(r'postid-(\d+)', content) or re.search(r'\?p=(\d+)', content) or re.search(r'"post_id"\s*:\s*"?(\d+)"?', content)
-                if post_id_match:
-                    post_id = post_id_match.group(1)
+                try:
                     domain = url.split('/')[2]
+                    # استخراج آیدی از طریق حدس زدن یا درخواست به صفحه برای پیدا کردن postid
+                    res_page = await client.get(url, headers=req_headers, timeout=10.0, follow_redirects=True)
+                    post_id_match = re.search(r'postid-(\d+)', res_page.text) or re.search(r'/p/(\d+)', res_page.text)
                     
-                    ts = int(time.time() * 1000)
-                    rnd_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=11))
-                    api_url = f"https://{domain}/wp-json/hexpro/v1/cinema-access/v2/{post_id}?hex_access_request={ts}-{rnd_str}"
-                    
-                    payload = {"check_id": 1, "checked_at": ts}
-                    try:
+                    if post_id_match:
+                        post_id = post_id_match.group(1)
+                        ts = int(time.time() * 1000)
+                        rnd_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=11))
+                        api_url = f"https://{domain}/wp-json/hexpro/v1/cinema-access/v2/{post_id}?hex_access_request={ts}-{rnd_str}"
+                        
+                        payload = {"check_id": 1, "checked_at": ts}
                         res_api = await client.post(api_url, json=payload, headers=req_headers, timeout=10.0)
                         if res_api.status_code == 200:
                             api_data = res_api.json()
-                            # اضافه کردن کل محتوای باز شده از API به متن قابل جستجو
                             if isinstance(api_data, dict):
                                 for key in ["download_html", "hero_html", "content"]:
                                     if key in api_data and api_data[key]:
                                         content += " " + str(api_data[key])
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
-            # استخراج تمام تگ‌های <a> با بازه گسترده‌تر
+            # اگر روش بالا به هر دلیلی جواب نداد، صفحه عادی را می‌خوانیم
+            if not content:
+                res = await client.get(url, headers=req_headers, timeout=15.0, follow_redirects=True)
+                content = res.text
+
+            # استخراج تمام تگ‌های <a> 
             a_tags = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', content, re.IGNORECASE | re.DOTALL)
             
             links = []
@@ -128,7 +135,6 @@ async def handle_extract(request):
                 href_lower = href.lower()
                 clean_text = clean_html_text(text_html)
                 
-                # بررسی اینکه آیا لینک مربوط به ویدیو یا دکمه دانلود است
                 has_video_ext = any(ext in href_lower for ext in video_exts) or 'upera.tv' in href_lower or 'hub.hxdl.ir' in href_lower
                 is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', 'rubika', 'eitaa', '/tag/', '/category/', '/author/', '/page/', '?p='])
                 is_self_link = url.strip('/') == href.strip('/')
@@ -169,7 +175,7 @@ async def handle_web_search(request):
 
     results = []
     for name, items in responses:
-        for title, link, image in items:
+        for title, link, image, _ in items: # اصلاح دریافت آیتم‌ها
             results.append({"site": name, "title": title, "link": link, "image": image})
     return web.json_response({"results": results}, headers=cors_headers)
 
