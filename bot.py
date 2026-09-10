@@ -1,7 +1,9 @@
 import os
 import html
 import re
+import asyncio
 import httpx
+from aiohttp import web
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -89,10 +91,37 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(output)
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-if __name__ == "__main__":
+# سرور ساختگی برای راضی نگه داشتن رندر
+async def handle_ping(request):
+    return web.Response(text="Bot is active and running!")
+
+async def run_web_server():
+    server = web.Application()
+    server.router.add_get("/", handle_ping)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+async def main():
     if not TOKEN:
         raise ValueError("BOT_TOKEN is not set in environment variables!")
+    
+    # اجرای وب‌سرور در پس‌زمینه
+    await run_web_server()
+
+    # اجرای بات تلگرام
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
-    app.run_polling()
+
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        # فعال نگه داشتن لوپ
+        while True:
+            await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())
