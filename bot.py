@@ -50,15 +50,33 @@ def clean_title(text: str) -> str:
     text = re.sub(r"\s+(با\s+دوبله\s+فارسی|زیرنویس\s+چسبیده|دوبله\s+فارسی|فارسی).*$", "", text, flags=re.IGNORECASE)
     return text.strip() or "مشاهده لینک"
 
+# تابع جدید برای استخراج پوستر
+def extract_image(item, site_type):
+    if site_type == "nxm":
+        return item.get("thumb") or item.get("poster") or item.get("pic") or ""
+    elif site_type == "wp":
+        yoast = item.get("yoast_head_json", {})
+        if isinstance(yoast, dict):
+            og_images = yoast.get("og_image", [])
+            if isinstance(og_images, list) and len(og_images) > 0:
+                return og_images[0].get("url", "")
+        
+        # در صورت نبود افزونه سئو، جستجو در محتوا
+        content = item.get("content", {}).get("rendered", "")
+        if content:
+            match = re.search(r'<img[^>]+src="([^"]+)"', content)
+            if match:
+                return match.group(1)
+    return ""
+
 async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/plain, */*"
     }
     try:
         url = f"{site['api']}{query}"
         res = await client.get(url, headers=headers, timeout=8.0, follow_redirects=True)
-
         if res.status_code != 200:
             return site["name"], []
         
@@ -66,24 +84,24 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         items = []
 
         if isinstance(data, list):
-            for item in data[:4]:
+            for item in data[:6]: # گرفتن 6 نتیجه برای زیباتر شدن گرید
                 raw_title = item.get("title", {}).get("rendered", "")
                 link = item.get("link", "")
+                image = extract_image(item, site["type"])
                 if raw_title and link:
-                    items.append((clean_title(raw_title), link))
+                    items.append((clean_title(raw_title), link, image))
 
         return site["name"], items
     except Exception:
         return site["name"], []
 
-# هندلرهای تلگرام
+# هندلر تلگرام
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست تا بین ۶ سایت معتبر و رایگان جستجو کنم.")
+    await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست.")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
-    wait_msg = await update.message.reply_text("در حال جستجو در سایت‌ها...")
-
+    wait_msg = await update.message.reply_text("در حال جستجو...")
     async with httpx.AsyncClient() as client:
         tasks = [fetch_site(client, site, query) for site in SITES]
         responses = await asyncio.gather(*tasks)
@@ -92,7 +110,8 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for name, items in responses:
         if items:
             output.append(f"▫️ <b>{name}</b>:")
-            for title, link in items:
+            # در تلگرام عکس نمی‌فرستیم، فقط اسم و لینک
+            for title, link, _ in items: 
                 output.append(f"  • <a href=\"{link}\">{html.escape(title)}</a>")
         else:
             output.append(f"▫️ <b>{name}</b>: نتیجه‌ای یافت نشد.")
@@ -100,9 +119,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(output)
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-# هندلرهای وب‌سرور برای سایت و آپتایم‌ربات
+# وب‌سرور برای سایت
 async def handle_ping(request):
-    return web.Response(text="Backend is active and running!")
+    return web.Response(text="Bot is active!")
 
 async def handle_web_search(request):
     query = request.query.get("q", "").strip()
@@ -111,7 +130,6 @@ async def handle_web_search(request):
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type"
     }
-
     if not query:
         return web.json_response({"results": []}, headers=cors_headers)
 
@@ -121,11 +139,13 @@ async def handle_web_search(request):
 
     results = []
     for name, items in responses:
-        for title, link in items:
+        # ارسال عکس به همراه عنوان و لینک به کلادفلر
+        for title, link, image in items:
             results.append({
                 "site": name,
                 "title": title,
-                "link": link
+                "link": link,
+                "image": image
             })
 
     return web.json_response({"results": results}, headers=cors_headers)
@@ -151,13 +171,11 @@ async def run_web_server():
 
 async def main():
     if not TOKEN:
-        raise ValueError("BOT_TOKEN is not set in environment variables!")
+        raise ValueError("BOT_TOKEN is missing!")
     await run_web_server()
-
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
-
     async with app:
         await app.start()
         await app.updater.start_polling()
