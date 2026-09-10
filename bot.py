@@ -40,10 +40,14 @@ def clean_title(text: str) -> str:
 
 async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
     url = f"{site['api']}{query}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
+    }
     try:
-        res = await client.get(url, timeout=5.0)
+        res = await client.get(url, headers=headers, timeout=8.0, follow_redirects=True)
         if res.status_code != 200:
-            return site["name"], []
+            return site["name"], [], f"Status: {res.status_code}"
         
         data = res.json()
         items = []
@@ -64,9 +68,11 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
                 if raw_title and link:
                     items.append((clean_title(raw_title), link))
 
-        return site["name"], items
-    except Exception:
-        return site["name"], []
+        return site["name"], items, "OK"
+    except httpx.TimeoutException:
+        return site["name"], [], "Timeout"
+    except Exception as e:
+        return site["name"], [], type(e).__name__
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("سلام! نام فیلم یا سریال مورد نظرت رو بفرست تا در سایت‌ها جستجو کنم.")
@@ -75,23 +81,22 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     wait_msg = await update.message.reply_text("در حال جستجو...")
 
-    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as client:
+    async with httpx.AsyncClient() as client:
         responses = [await fetch_site(client, site, query) for site in SITES]
 
     output = []
-    for name, items in responses:
+    for name, items, status in responses:
         if items:
             output.append(f"▫️ <b>{name}</b>:")
             for title, link in items:
                 safe_title = html.escape(title)
                 output.append(f"  • <a href=\"{link}\">{safe_title}</a>")
         else:
-            output.append(f"▫️ <b>{name}</b>: نتیجه‌ای یافت نشد.")
+            output.append(f"▫️ <b>{name}</b>: نتیجه‌ای یافت نشد ({status})")
 
     text = "\n".join(output)
     await wait_msg.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-# سرور ساختگی برای راضی نگه داشتن رندر
 async def handle_ping(request):
     return web.Response(text="Bot is active and running!")
 
@@ -107,11 +112,8 @@ async def run_web_server():
 async def main():
     if not TOKEN:
         raise ValueError("BOT_TOKEN is not set in environment variables!")
-    
-    # اجرای وب‌سرور در پس‌زمینه
     await run_web_server()
 
-    # اجرای بات تلگرام
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
@@ -119,7 +121,6 @@ async def main():
     async with app:
         await app.start()
         await app.updater.start_polling()
-        # فعال نگه داشتن لوپ
         while True:
             await asyncio.sleep(3600)
 
