@@ -68,7 +68,9 @@ async def fetch_site(client: httpx.AsyncClient, site: dict, query: str):
         return site["name"], items
     except: return site["name"], []
 
-# --- آپدیت: استخراج‌گر فوق‌هوشمند با پشتیبانی از هکس‌دانلود و پلیر امن ---
+# =====================================================================
+# استخراج‌گر کاملاً دقیق (Strict Video Link Extractor)
+# =====================================================================
 async def handle_extract(request):
     url = request.query.get("url", "").strip()
     cors_headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET"}
@@ -84,31 +86,53 @@ async def handle_extract(request):
             
             links = []
             seen = set()
+            
+            # فقط و فقط این پسوندها به عنوان لینک فیلم شناخته میشن
+            video_exts = ['.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m3u8']
+            
             for href, text_html in a_tags:
-                href = urljoin(url, href) # تبدیل لینک‌های نسبی به کامل
+                href = urljoin(url, href) 
                 if not href.startswith('http'): continue
                 
-                # رفع مشکل پلیر: تبدیل تمام لینک‌های دانلود به https
-                href = href.replace('http://', 'https://')
                 href_lower = href.lower()
                 clean_text = clean_html_text(text_html)
                 
-                # شرط جدید برای پیدا کردن لینک‌های مخفی مثل هکس‌دانلود
-                has_video_ext = any(x in href_lower for x in ['.mkv', '.mp4', '.avi', '.m4v'])
-                has_dl_keyword = any(x in clean_text for x in ['دانلود', 'کیفیت', 'قسمت', 'فصل', 'پارت', 'لینک مستقیم'])
-                is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', '/tag/', '/category/'])
+                # قانون سخت‌گیرانه: حتماً باید فایل ویدیویی باشه
+                has_video_ext = any(ext in href_lower for ext in video_exts)
                 
-                if (has_video_ext or has_dl_keyword) and not is_junk and href not in seen:
-                    if not clean_text or len(clean_text) < 3:
-                        if '1080' in href: clean_text = "کیفیت 1080p"
-                        elif '720' in href: clean_text = "کیفیت 720p"
-                        elif '480' in href: clean_text = "کیفیت 480p"
-                        else: clean_text = "لینک دانلود"
+                # حذف شبکه‌های اجتماعی، تگ‌ها و لینک‌های متفرقه
+                is_junk = any(x in href_lower for x in ['t.me', 'telegram', 'instagram', 'rubika', 'eitaa', '/tag/', '/category/', '/author/', '/page/', '?p='])
+                is_self_link = url.strip('/') == href.strip('/')
+                
+                if has_video_ext and not is_junk and not is_self_link and href not in seen:
+                    # تبدیل http به https برای رفع خطای Mixed Content پلیر
+                    href = href.replace('http://', 'https://')
                     
-                    clean_text = clean_text.replace("دانلود", "").strip()
-                    if len(clean_text) > 2:
-                        links.append({"title": clean_text[:70], "url": href})
-                        seen.add(href)
+                    # اگر سایت اسم لینک رو بد نوشته بود یا فقط نوشته بود "دانلود"، ما از خود لینک مشخصات رو می‌کشیم بیرون
+                    if len(clean_text) < 4 or clean_text.strip() == "دانلود":
+                        qualities = []
+                        if '1080' in href_lower: qualities.append('1080p')
+                        elif '720' in href_lower: qualities.append('720p')
+                        elif '480' in href_lower: qualities.append('480p')
+                        
+                        if 'x265' in href_lower: qualities.append('x265')
+                        if 'bluray' in href_lower: qualities.append('BluRay')
+                        if 'web-dl' in href_lower or 'webrip' in href_lower: qualities.append('WEB-DL')
+                        if 'dubbed' in href_lower or 'farsi' in href_lower or 'دوبله' in href_lower: qualities.append('دوبله فارسی')
+                        if 'sub' in href_lower or 'زیرنویس' in href_lower: qualities.append('زیرنویس')
+                        
+                        if qualities:
+                            clean_text = " - ".join(qualities)
+                        else:
+                            # اگه کیفیت تو لینک نبود، اسم خود فایل رو نشون بده
+                            clean_text = href.split('/')[-1][:40] 
+
+                    # تمیزکاری نهایی اسم لینک
+                    clean_text = clean_text.replace("دانلود", "").replace("لینک مستقیم", "").strip()
+                    if not clean_text: clean_text = "لینک دانلود فیلم"
+                    
+                    links.append({"title": clean_text[:80], "url": href})
+                    seen.add(href)
             
             return web.json_response({"links": links}, headers=cors_headers)
     except Exception as e:
@@ -145,9 +169,8 @@ async def run_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# هندلرهای تلگرام
 async def start(update, context): await update.message.reply_text("سلام! نام فیلم رو بفرست.")
-async def search(update, context): ... # هندلر سرچ تلگرام
+async def search(update, context): ... 
 
 async def main():
     if not TOKEN: raise ValueError("BOT_TOKEN is missing!")
