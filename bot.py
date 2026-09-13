@@ -27,17 +27,17 @@ CORS_HEADERS = {
 }
 
 IRAN_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "X-Forwarded-For": "5.200.14.15",
     "X-Real-IP": "5.200.14.15"
 }
 
-def clean_title(text: str) -> str:
-    text = re.sub(r"<[^>]+>", "", text)
-    text = html.unescape(text)
-    text = re.sub(r"^(دانلود|فیلم|سریال|انیمیشن|سینمایی)\s+", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s+(با\s+دوبله\s+فارسی|زیرنویس\s+چسبیده|دوبله\s+فارسی|فارسی).*$", "", text, flags=re.IGNORECASE)
-    return text.strip() or "مشاهده لینک"
+def clean_title(raw: str) -> str:
+    t = re.sub(r"<[^>]+>", "", raw)
+    t = html.unescape(t)
+    t = re.sub(r"^(دانلود|فیلم|سریال|انیمیشن|سینمایی)\s+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s+(با\s+دوبله\s+فارسی|زیرنویس\s+چسبیده|دوبله\s+فارسی|فارسی).*$", "", t, flags=re.IGNORECASE)
+    return t.strip() or "مشاهده فیلم"
 
 async def check_single_site(client: httpx.AsyncClient, site: dict, query: str):
     try:
@@ -51,90 +51,101 @@ async def check_single_site(client: httpx.AsyncClient, site: dict, query: str):
         pass
     return {"site": site["name"], "nameFa": site["nameFa"], "available": False, "link": ""}
 
-# =====================================================================
-# موتور جستجو و استخراج فیلم کامل از آپارات و نماشا (منطق استودیو)
-# =====================================================================
 async def search_aparat_full_movie(query: str):
-    clean_q = re.sub(r'[0-9]{4}', '', query).strip()
-    search_url = f"https://www.aparat.com/api/fa/v1/video/video/search/text/{clean_q} فیلم کامل"
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(search_url, timeout=4.5)
+    clean_fa = re.sub(r'[0-9]{4}', '', query).strip()
+    search_queries = [f"{clean_fa} فیلم کامل", f"{clean_fa} دوبله فارسی", clean_fa]
+
+    async with httpx.AsyncClient(headers=IRAN_HEADERS, timeout=5.0) as client:
+        # ۱. سرچ آپارات
+        for q_text in search_queries:
+            try:
+                search_url = f"https://www.aparat.com/api/fa/v1/video/video/search/text/{q_text}"
+                res = await client.get(search_url)
+                if res.status_code == 200:
+                    data = res.json()
+                    videos = [it for it in data.get("included", []) if it.get("type") == "Video"]
+                    for v in videos[:10]:
+                        attr = v.get("attributes", {})
+                        dur = int(attr.get("duration", 0) or 0)
+                        uid = attr.get("uid")
+                        if dur >= 1800 and uid: # فیلم کامل بالای ۳۰ دقیقه
+                            detail_res = await client.get(f"https://www.aparat.com/api/fa/v1/video/video/show/videohash/{uid}")
+                            if detail_res.status_code == 200:
+                                d_data = detail_res.json()
+                                d_attr = d_data.get("data", {}).get("attributes", {})
+                                file_links = d_attr.get("file_link_all", [])
+                                qualities = []
+                                for f in file_links:
+                                    if f.get("urls") and len(f["urls"]) > 0:
+                                        qualities.append({
+                                            "text": f.get("text") or f"کیفیت {f.get('profile', 'استاندارد')}",
+                                            "url": f["urls"][0]
+                                        })
+                                qualities.reverse()
+                                stream_url = qualities[0]["url"] if qualities else d_attr.get("file_link", "")
+                                return {
+                                    "available": True,
+                                    "provider": "Aparat",
+                                    "title": d_attr.get("title") or attr.get("title"),
+                                    "durationFormatted": f"{round(dur/60)} دقیقه",
+                                    "embedUrl": f"https://www.aparat.com/video/video/embed/videohash/{uid}/vt/frame",
+                                    "qualities": qualities,
+                                    "streamUrl": stream_url or d_attr.get("hls_link", ""),
+                                    "vlcUrl": f"vlc://{stream_url}" if stream_url else ""
+                                }
+            except Exception:
+                continue
+
+        # ۲. سرچ نماشا (Fallback)
+        try:
+            namasha_url = f"https://www.namasha.com/search?q={clean_fa} کامل"
+            res = await client.get(namasha_url)
             if res.status_code == 200:
-                data = res.json()
-                videos = [it for it in data.get("included", []) if it.get("type") == "Video"]
-                
-                for v in videos[:8]:
-                    attr = v.get("attributes", {})
-                    dur = int(attr.get("duration", 0) or 0)
-                    uid = attr.get("uid")
-                    # فیلم سینمایی کامل (بالای ۳۵ دقیقه = ۲۱۰۰ ثانیه)
-                    if dur >= 2100 and uid:
-                        detail_res = await client.get(f"https://www.aparat.com/api/fa/v1/video/video/show/videohash/{uid}", timeout=4.0)
-                        if detail_res.status_code == 200:
-                            d_data = detail_res.json()
-                            d_attr = d_data.get("data", {}).get("attributes", {})
-                            file_links = d_attr.get("file_link_all", [])
-                            
-                            qualities = []
-                            for f in file_links:
-                                if f.get("urls") and len(f["urls"]) > 0:
-                                    qualities.append({
-                                        "text": f.get("text") or f"کیفیت {f.get('profile', 'استاندارد')}",
-                                        "profile": f.get("profile", "720p"),
-                                        "url": f["urls"][0]
-                                    })
-                            qualities.reverse() # بالاترین کیفیت اول
-                            
-                            stream_url = qualities[0]["url"] if qualities else d_attr.get("file_link", "")
-                            hls_url = d_attr.get("hls_link", "")
-                            
+                matches = re.findall(r'<a href="(https://www.namasha.com/v/([a-zA-Z0-9]+))"', res.text)
+                if matches:
+                    page_url, uid = matches[0]
+                    v_res = await client.get(page_url)
+                    if v_res.status_code == 200:
+                        src_matches = re.findall(r"'file':\s*'([^']+\.mp4)',\s*'label':\s*'([^']+)'", v_res.text)
+                        if src_matches:
+                            qualities = [{"text": f"کیفیت {m[1]}", "url": m[0]} for m in src_matches]
+                            stream_url = qualities[0]["url"]
                             return {
                                 "available": True,
-                                "provider": "Aparat",
-                                "providerNameFa": "آپارات",
-                                "title": d_attr.get("title") or attr.get("title"),
-                                "durationFormatted": f"{round(dur/60)} دقیقه",
-                                "embedUrl": f"https://www.aparat.com/video/video/embed/videohash/{uid}/vt/frame",
-                                "pageUrl": f"https://www.aparat.com/v/{uid}",
+                                "provider": "Namasha",
+                                "title": f"پخش آنلاین {clean_fa}",
+                                "durationFormatted": "فیلم کامل",
+                                "embedUrl": f"https://www.namasha.com/embed/{uid}",
                                 "qualities": qualities,
-                                "streamUrl": stream_url or hls_url,
-                                "vlcUrl": f"vlc://{stream_url}" if stream_url else ""
+                                "streamUrl": stream_url,
+                                "vlcUrl": f"vlc://{stream_url}"
                             }
-    except Exception:
-        pass
+        except Exception:
+            pass
+
     return {"available": False}
 
-# =====================================================================
-# API Endpoints
-# =====================================================================
+# ==================== API Endpoints ====================
 async def handle_ping(request):
-    return web.Response(text="MMD FILM Engine Active!")
+    return web.Response(text="MMD FILM Online")
 
 async def handle_check_sources(request):
     query = request.query.get("query", "").strip()
-    if not query:
-        return web.json_response({"sources": []}, headers=CORS_HEADERS)
-    
+    if not query: return web.json_response({"sources": []}, headers=CORS_HEADERS)
     clean_q = re.sub(r'[0-9]{4}', '', query).strip()
     async with httpx.AsyncClient() as client:
         tasks = [check_single_site(client, site, clean_q) for site in SITES]
         results = await asyncio.gather(*tasks)
-        
-    return web.json_response({"query": query, "sources": results}, headers=CORS_HEADERS)
+    return web.json_response({"sources": results}, headers=CORS_HEADERS)
 
-async def handle_aparat_movie(request):
+async def handle_aparat(request):
     q = request.query.get("q", "").strip()
-    if not q:
-        return web.json_response({"available": False}, headers=CORS_HEADERS)
     data = await search_aparat_full_movie(q)
     return web.json_response({"success": True, "data": data}, headers=CORS_HEADERS)
 
-async def handle_tmdb_trending(request):
+async def handle_tmdb(request):
     media_type = request.match_info.get("type", "movie")
     url = f"https://api.themoviedb.org/3/trending/{media_type}/week?api_key={TMDB_API_KEY}&language=fa-IR"
-    
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(url, timeout=5.0)
@@ -162,8 +173,8 @@ async def run_web_server():
     server = web.Application()
     server.router.add_get("/", handle_ping)
     server.router.add_get("/api/check-sources", handle_check_sources)
-    server.router.add_get("/api/aparat/full-movie", handle_aparat_movie)
-    server.router.add_get("/api/tmdb/{type}", handle_tmdb_trending)
+    server.router.add_get("/api/aparat/full-movie", handle_aparat)
+    server.router.add_get("/api/tmdb/{type}", handle_tmdb)
     server.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
     runner = web.AppRunner(server)
     await runner.setup()
@@ -172,7 +183,7 @@ async def run_web_server():
     await site.start()
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎬 MMD FILM آماده است!")
+    await update.message.reply_text("🎬 سرور و بات آماده به کار است.")
 
 async def main():
     if not TOKEN: raise ValueError("BOT_TOKEN is missing!")
