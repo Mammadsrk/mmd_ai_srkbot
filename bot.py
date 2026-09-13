@@ -100,7 +100,7 @@ async def search_movie_variants(title_fa: str, title_en: str):
 
     return result
 
-# ==================== اندپوینت دریافت مشخصات جامع TMDB ====================
+# ==================== دریافت مشخصات جامع سینمایی TMDB ====================
 async def handle_movie_details(request):
     title = request.query.get("title", "").strip()
     title_fa = request.query.get("titleFa", title).strip()
@@ -114,7 +114,7 @@ async def handle_movie_details(request):
         "title": clean_en,
         "titleFa": clean_fa,
         "type": media_type,
-        "overviewFa": "خلاصه داستانی برای این اثر ثبت نشده است.",
+        "overviewFa": "خلاصه داستانی ثبت نشده است.",
         "rating": 7.5,
         "releaseYear": "2024",
         "runtime": "120 دقیقه" if media_type == "movie" else "مجموعه تلویزیونی",
@@ -122,48 +122,74 @@ async def handle_movie_details(request):
         "cast": ["ستارگان مطرح سینما"],
         "posterUrl": "",
         "backdropUrl": "",
-        "genres": ["سینمایی", "اکشن"],
+        "genres": ["سینمایی"],
         "trailers": [],
         "sources": [],
         "movieFiles": None
     }
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        # دریافت جزئیات، پوسترها، تریلر و بازیگران از TMDB
-        if tmdb_id and TMDB_API_KEY:
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        if not tmdb_id and clean_en:
             try:
-                tmdb_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=videos,credits&language=fa-IR"
-                res = await client.get(tmdb_url)
-                if res.status_code == 200:
-                    d = res.json()
-                    detail_data["overviewFa"] = d.get("overview") or detail_data["overviewFa"]
-                    detail_data["titleFa"] = d.get("title") or d.get("name") or detail_data["titleFa"]
-                    detail_data["rating"] = round(d.get("vote_average", 7.5), 1)
-                    detail_data["backdropUrl"] = f"https://image.tmdb.org/t/p/original{d.get('backdrop_path')}" if d.get("backdrop_path") else ""
-                    detail_data["posterUrl"] = f"https://image.tmdb.org/t/p/w500{d.get('poster_path')}" if d.get("poster_path") else ""
-                    if d.get("runtime"): detail_data["runtime"] = f"{d['runtime']} دقیقه"
-                    if d.get("genres"): detail_data["genres"] = [g["name"] for g in d["genres"]]
-                    
-                    # بازیگران و کارگردان
-                    if d.get("credits", {}).get("cast"):
-                        detail_data["cast"] = [c["name"] for c in d["credits"]["cast"][:6]]
-                    if d.get("credits", {}).get("crew"):
-                        dir_item = next((c["name"] for c in d["credits"]["crew"] if c.get("job") == "Director"), None)
-                        if dir_item: detail_data["director"] = dir_item
-
-                    # تریلر یوتیوب
-                    for v in d.get("videos", {}).get("results", []):
-                        if v.get("site") == "YouTube" and v.get("key"):
-                            detail_data["trailers"].append({
-                                "name": "سرور جهانی (یوتیوب)",
-                                "url": f"https://www.youtube-nocookie.com/embed/{v['key']}?autoplay=1",
-                                "site": "YouTube"
-                            })
-                            break
+                search_url = f"https://api.themoviedb.org/3/search/{media_type}?api_key={TMDB_API_KEY}&query={clean_en}&language=en-US"
+                s_res = await client.get(search_url)
+                if s_res.status_code == 200:
+                    s_data = s_res.json().get("results", [])
+                    if s_data:
+                        tmdb_id = str(s_data[0]["id"])
             except Exception:
                 pass
 
-        # تریلر آپارات (مخصوص ایران بدون فیلترشکن)
+        if tmdb_id:
+            try:
+                tmdb_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=videos,credits&language=en-US"
+                res = await client.get(tmdb_url)
+                if res.status_code == 200:
+                    d = res.json()
+                    detail_data["rating"] = round(d.get("vote_average", 7.5), 1)
+                    detail_data["overviewFa"] = d.get("overview") or detail_data["overviewFa"]
+                    if d.get("backdrop_path"):
+                        detail_data["backdropUrl"] = f"https://image.tmdb.org/t/p/original{d['backdrop_path']}"
+                    if d.get("poster_path"):
+                        detail_data["posterUrl"] = f"https://image.tmdb.org/t/p/w500{d['poster_path']}"
+                    if d.get("runtime"):
+                        detail_data["runtime"] = f"{d['runtime']} دقیقه"
+                    if d.get("genres"):
+                        detail_data["genres"] = [g["name"] for g in d["genres"]]
+                    
+                    if d.get("credits", {}).get("cast"):
+                        detail_data["cast"] = [c["name"] for c in d["credits"]["cast"][:6]]
+                    if d.get("credits", {}).get("crew"):
+                        dir_name = next((c["name"] for c in d["credits"]["crew"] if c.get("job") == "Director"), None)
+                        if dir_name:
+                            detail_data["director"] = dir_name
+
+                    videos = d.get("videos", {}).get("results", [])
+                    trailer_v = next((v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"), None)
+                    if not trailer_v and videos:
+                        trailer_v = next((v for v in videos if v.get("site") == "YouTube"), None)
+
+                    if trailer_v and trailer_v.get("key"):
+                        detail_data["trailers"].append({
+                            "name": "سرور جهانی (یوتیوب 4K)",
+                            "url": f"https://www.youtube-nocookie.com/embed/{trailer_v['key']}?autoplay=1&rel=0",
+                            "site": "YouTube"
+                        })
+            except Exception:
+                pass
+
+            try:
+                fa_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}&language=fa-IR"
+                fa_res = await client.get(fa_url)
+                if fa_res.status_code == 200:
+                    fa_d = fa_res.json()
+                    if fa_d.get("overview") and len(fa_d["overview"].strip()) > 10:
+                        detail_data["overviewFa"] = fa_d["overview"].strip()
+                    if fa_d.get("title") or fa_d.get("name"):
+                        detail_data["titleFa"] = fa_d.get("title") or fa_d.get("name")
+            except Exception:
+                pass
+
         try:
             ap_res = await client.get(f"https://www.aparat.com/api/fa/v1/video/video/search/text/{clean_fa} تریلر")
             if ap_res.status_code == 200:
@@ -179,7 +205,6 @@ async def handle_movie_details(request):
         except Exception:
             pass
 
-        # مراجع ۶ سایت ایرانی
         for s in SITES:
             detail_data["sources"].append({
                 "nameFa": s["nameFa"],
@@ -187,13 +212,43 @@ async def handle_movie_details(request):
                 "url": f"https://{s['domain']}/?s={clean_fa}"
             })
 
-    # اگر فیلم سینمایی بود، نسخه‌های دوبله و زیرنویس آپارات را استخراج کن
     if media_type == "movie":
         detail_data["movieFiles"] = await search_movie_variants(clean_fa, clean_en)
 
     return web.json_response({"success": True, "data": detail_data}, headers=CORS_HEADERS)
 
-# ==================== سایر Routeها ====================
+# ==================== دریافت ترندها از TMDB ====================
+async def handle_tmdb_trending(request):
+    media_type = request.match_info.get("type", "movie")
+    url = f"https://api.themoviedb.org/3/trending/{media_type}/week?api_key={TMDB_API_KEY}&language=en-US"
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, timeout=7.0)
+            if res.status_code == 200:
+                data = res.json()
+                results = []
+                for m in data.get("results", [])[:14]:
+                    title_en = m.get("original_title") or m.get("original_name") or m.get("title") or m.get("name")
+                    title_main = m.get("title") or m.get("name") or title_en
+                    poster = f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}" if m.get("poster_path") else ""
+                    backdrop = f"https://image.tmdb.org/t/p/original{m.get('backdrop_path')}" if m.get("backdrop_path") else ""
+                    
+                    results.append({
+                        "id": str(m.get("id")),
+                        "tmdbId": m.get("id"),
+                        "type": media_type,
+                        "title": title_en,
+                        "titleFa": title_main,
+                        "posterUrl": poster,
+                        "backdropUrl": backdrop,
+                        "rating": round(m.get("vote_average", 7.5), 1),
+                        "releaseYear": (m.get("release_date") or m.get("first_air_date") or "2024").split("-")[0]
+                    })
+                return web.json_response({"results": results}, headers=CORS_HEADERS)
+    except Exception:
+        pass
+    return web.json_response({"results": []}, headers=CORS_HEADERS)
+
 async def handle_check_sources(request):
     query = request.query.get("query", "").strip()
     if not query: return web.json_response({"sources": []}, headers=CORS_HEADERS)
@@ -202,31 +257,6 @@ async def handle_check_sources(request):
         tasks = [check_single_site(client, site, clean_q) for site in SITES]
         results = await asyncio.gather(*tasks)
     return web.json_response({"sources": results}, headers=CORS_HEADERS)
-
-async def handle_tmdb_trending(request):
-    media_type = request.match_info.get("type", "movie")
-    url = f"https://api.themoviedb.org/3/trending/{media_type}/week?api_key={TMDB_API_KEY}&language=fa-IR"
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url, timeout=5.0)
-            if res.status_code == 200:
-                data = res.json()
-                results = []
-                for m in data.get("results", [])[:14]:
-                    results.append({
-                        "id": str(m.get("id")),
-                        "tmdbId": m.get("id"),
-                        "type": media_type,
-                        "title": m.get("original_title") or m.get("original_name") or m.get("title") or m.get("name"),
-                        "titleFa": m.get("title") or m.get("name"),
-                        "posterUrl": f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}" if m.get("poster_path") else "",
-                        "rating": round(m.get("vote_average", 7.5), 1),
-                        "releaseYear": (m.get("release_date") or m.get("first_air_date") or "2024").split("-")[0]
-                    })
-                return web.json_response({"results": results}, headers=CORS_HEADERS)
-    except Exception:
-        pass
-    return web.json_response({"results": []}, headers=CORS_HEADERS)
 
 async def handle_options(request):
     return web.Response(status=204, headers=CORS_HEADERS)
